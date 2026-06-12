@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+
+# API secrets & uploads
+api/.env
+api/.env.local
+api/.env.*.local
+api/data/uploads/
+
+# Node / Next.js
+node_modules/
+.next/
+out/
+build/
+
+# IDE & OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*Zone.Identifier*
