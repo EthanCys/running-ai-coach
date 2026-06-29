@@ -1,0 +1,30 @@
+# ── secrets / credentials (never commit) ──
+api/.env
+api/.env.local
+api/.env.*.local
+api/data/coros_sessions.json
+api/data/coros_client.json
+web/.env.local
+web/.env*.local
+
+# ── user data ──
+api/data/uploads/
+
+# ── python ──
+api/.venv/
+**/__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+
+# ── node / next ──
+web/node_modules/
+web/.next/
+web/out/
+npm-debug.log*
+
+# ── os / editor ──
+.DS_Store
+*.swp
+.idea/
+.vscode/
