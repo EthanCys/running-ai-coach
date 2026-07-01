@@ -1,0 +1,339 @@
+# Running AI Coach Repo Wiki
+
+This file is a fast orientation note for AI agents and new contributors.
+It describes the repo as it exists now, not the original MVP plan.
+
+## 1. What This Repo Is
+
+Running AI Coach is a Chinese-language running analysis product.
+
+Current product shape:
+- Primary UX: connect a COROS account, then chat with a running coach UI.
+- Secondary ingestion path: upload a FIT file to the backend API.
+- Core principle: deterministic rule layer computes facts; the LLM only turns facts into coach language.
+
+If you change only one thing correctly, keep this invariant:
+
+`raw source -> parsed/shared model -> rule layer -> report -> LLM wording`
+
+The LLM must not become the source of numeric truth.
+
+## 2. Current High-Level Architecture
+
+There are two data-entry paths:
+
+1. COROS OAuth + chat flow
+2. FIT upload API flow
+
+Both converge on the same downstream analysis pipeline.
+
+```text
+COROS OAuth session
+  -> chat endpoint or analyze endpoint
+  -> coros_client / coros_adapter
+  -> ParsedFitActivity
+  -> analysis_engine
+  -> report_builder
+  -> coach_commentary
+  -> JSON response
+
+FIT file
+  -> /api/v1/activities/upload
+  -> fit_parser
+  -> ParsedFitActivity
+  -> analysis_engine
+  -> report_builder
+  -> coach_commentary
+  -> JSON response
+```
+
+Important consequence:
+- `ParsedFitActivity` is the shared domain contract.
+- Any new data source should map into that model instead of bypassing it.
+
+## 3. What The User Actually Sees Today
+
+The current frontend at [web/src/app/page.tsx](/home/ethan/work/projects/running-ai-coach/web/src/app/page.tsx) is chat-first, not upload-first.
+
+Main user flow:
+- open web app
+- connect COROS via OAuth
+- restore a session from localStorage if possible
+- ask preset or free-form questions
+- backend chat orchestrator decides whether to analyze latest activity, list recent training, or answer generally
+- assistant message may include a compact structured report card
+
+Important reality:
+- FIT upload still exists in the backend API.
+- FIT upload is not the main current frontend experience.
+
+## 4. Important Entry Points
+
+Human-facing docs:
+- [README.md](/home/ethan/work/projects/running-ai-coach/README.md)
+- [AGENTS.md](/home/ethan/work/projects/running-ai-coach/AGENTS.md)
+- [docs/ARCHITECTURE.md](/home/ethan/work/projects/running-ai-coach/docs/ARCHITECTURE.md)
+- [docs/PERSISTENCE-DESIGN.md](/home/ethan/work/projects/running-ai-coach/docs/PERSISTENCE-DESIGN.md)
+- [docs/adr/](/home/ethan/work/projects/running-ai-coach/docs/adr)
+
+Backend entry points:
+- [api/app/main.py](/home/ethan/work/projects/running-ai-coach/api/app/main.py): FastAPI app + CORS + root router
+- [api/app/api/router.py](/home/ethan/work/projects/running-ai-coach/api/app/api/router.py): combines `activities`, `auth`, `chat`
+- [api/app/api/routes/activities.py](/home/ethan/work/projects/running-ai-coach/api/app/api/routes/activities.py): FIT upload and direct COROS analyze endpoint
+- [api/app/api/routes/auth.py](/home/ethan/work/projects/running-ai-coach/api/app/api/routes/auth.py): COROS OAuth + session handling
+- [api/app/api/routes/chat.py](/home/ethan/work/projects/running-ai-coach/api/app/api/routes/chat.py): natural-language chat endpoint
+
+Core services:
+- [api/app/services/chat_orchestrator.py](/home/ethan/work/projects/running-ai-coach/api/app/services/chat_orchestrator.py): intent routing and report-card assembly
+- [api/app/services/coros_client.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coros_client.py): JSON-RPC wrapper over COROS MCP
+- [api/app/services/coros_adapter.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coros_adapter.py): COROS payload -> shared parsed activity
+- [api/app/services/fit_parser.py](/home/ethan/work/projects/running-ai-coach/api/app/services/fit_parser.py): FIT -> shared parsed activity
+- [api/app/services/analysis_engine.py](/home/ethan/work/projects/running-ai-coach/api/app/services/analysis_engine.py): deterministic analysis facts
+- [api/app/services/report_builder.py](/home/ethan/work/projects/running-ai-coach/api/app/services/report_builder.py): deterministic Chinese report
+- [api/app/services/coach_commentary.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coach_commentary.py): LLM prompt + deterministic fallback
+
+Contracts:
+- [api/app/schemas/activities.py](/home/ethan/work/projects/running-ai-coach/api/app/schemas/activities.py)
+
+Frontend:
+- [web/src/app/page.tsx](/home/ethan/work/projects/running-ai-coach/web/src/app/page.tsx): single-page chat app
+- [web/package.json](/home/ethan/work/projects/running-ai-coach/web/package.json)
+
+## 5. Backend Architecture Details
+
+### 5.1 API surface
+
+Core endpoints:
+- `GET /healthz`
+- `POST /api/v1/chat`
+- `GET /api/v1/chat/presets`
+- `GET /api/v1/auth/coros/login`
+- `GET /api/v1/auth/coros/callback`
+- `GET /api/v1/auth/coros/status`
+- `POST /api/v1/auth/coros/logout`
+- `POST /api/v1/activities/upload`
+- `POST /api/v1/activities/analyze`
+
+### 5.2 Session/auth model
+
+OAuth state and sessions are MVP-grade.
+
+Current stores:
+- in-memory pending PKCE handshakes
+- persisted COROS sessions in [api/data/coros_sessions.json](/home/ethan/work/projects/running-ai-coach/api/data/coros_sessions.json)
+
+Implications:
+- sessions survive server restart because they are written to disk
+- this is still not a real multi-user persistence layer
+- refresh tokens are not yet backed by a production-grade encrypted store
+
+### 5.3 Shared domain model
+
+The important contract is `ParsedFitActivity`, produced by both FIT parsing and COROS adaptation.
+
+Downstream layers assume they receive:
+- summary/session info
+- lap list
+- segment list
+- metrics bundle
+
+This keeps the rule layer independent from source-specific payload shapes.
+
+### 5.4 Rule layer
+
+The rule layer is in [analysis_engine.py](/home/ethan/work/projects/running-ai-coach/api/app/services/analysis_engine.py).
+
+Current outputs include:
+- `training_type`
+- `intensity_level`
+- `ef_ratio`
+- `recovery_quality`
+- `recovery_hr_drop_bpm`
+- `fatigue_risk_level`
+- `mechanics_stability_score`
+
+Key characteristics:
+- interval classification is structure-aware
+- work segments are thresholded, not inferred from whole-run average pace alone
+- EF ratio is treated as a trend/baseline signal, not a single-run quality score
+- intensity is derived without requiring personal HR max configuration
+
+### 5.5 Report layer
+
+[report_builder.py](/home/ethan/work/projects/running-ai-coach/api/app/services/report_builder.py) converts analysis facts into deterministic Chinese output.
+
+It produces:
+- `verdict`
+- `findings`
+- `risks`
+- `recommendation`
+
+This is still rule-based, not LLM-generated.
+
+### 5.6 Language layer
+
+[coach_commentary.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coach_commentary.py) is the only layer allowed to call the LLM.
+
+It:
+- builds a grounded prompt from facts
+- includes optional COROS context and Level 1/2/3 adjustment flags
+- returns `summary`, `strengths`, `watchouts`, `next_steps`
+- falls back deterministically if the LLM fails
+
+Important: the fallback path is a first-class runtime path, not a backup afterthought.
+
+## 6. Frontend Architecture Details
+
+The frontend is a Next.js App Router single page.
+
+Current shape:
+- OAuth gate if no COROS session
+- chat view if connected
+- preset messages for common coach actions
+- message stream with optional embedded report card
+
+State handled in the page component:
+- COROS session id in `localStorage`
+- connection status via `/api/v1/auth/coros/status`
+- chat message list in component state
+
+There is no global state library or client-side data cache yet.
+
+## 7. External Dependencies / Integrations
+
+Backend dependencies from [api/pyproject.toml](/home/ethan/work/projects/running-ai-coach/api/pyproject.toml):
+- FastAPI
+- fitdecode
+- httpx
+- pydantic v2
+- python-multipart
+- uvicorn
+
+Frontend dependencies from [web/package.json](/home/ethan/work/projects/running-ai-coach/web/package.json):
+- Next.js 16
+- React 19
+- Tailwind 4
+- TypeScript
+- ESLint
+
+External services:
+- COROS MCP at `https://mcpcn.coros.com/mcp`
+- OpenAI-compatible LLM endpoint from `api/.env.local`
+
+## 8. Runtime Configuration
+
+Important environment-driven values:
+- `LLM_API_KEY`
+- `LLM_MODEL`
+- `LLM_BASE_URL`
+- `BACKEND_BASE_URL`
+- `WEB_BASE_URL`
+- `COROS_ACCESS_TOKEN` as fallback when no OAuth session is present
+
+Potentially confusing but important:
+- older docs and commands often use backend port `8000`
+- current frontend and OAuth route defaults use backend port `8010`
+  - [web/src/app/page.tsx](/home/ethan/work/projects/running-ai-coach/web/src/app/page.tsx) default API base is `http://127.0.0.1:8010`
+  - [api/app/api/routes/auth.py](/home/ethan/work/projects/running-ai-coach/api/app/api/routes/auth.py) default backend base is `http://127.0.0.1:8010`
+
+If an agent starts the backend on `8000` without overriding env vars, the current frontend/OAuth flow may not match it.
+
+## 9. Storage and Persistence Reality
+
+Current local storage inside the repo:
+- [api/data/uploads](/home/ethan/work/projects/running-ai-coach/api/data/uploads): uploaded FIT files
+- [api/data/coros_sessions.json](/home/ethan/work/projects/running-ai-coach/api/data/coros_sessions.json): persisted COROS sessions
+
+What does not exist yet:
+- no PostgreSQL or other real application database
+- no formal user table
+- no stored trend history beyond ad hoc local files
+- no production-grade token storage
+
+The future persistence direction is already designed in [docs/PERSISTENCE-DESIGN.md](/home/ethan/work/projects/running-ai-coach/docs/PERSISTENCE-DESIGN.md).
+
+## 10. Known Architectural Constraints
+
+1. The app is still effectively MVP-grade in persistence.
+2. Chat intent routing is deterministic keyword logic, not an autonomous agent planner.
+3. The frontend is intentionally thin; most business logic lives in backend services.
+4. COROS is the primary product path; FIT upload is still available but secondary.
+5. Some docs describe the original upload-first MVP and may lag behind the current chat-first UI.
+
+## 11. Repo Shape At A Glance
+
+```text
+running-ai-coach/
+├── README.md
+├── AGENTS.md
+├── MVP-PRD.md
+├── TECHNICAL-SPEC.md
+├── wiki.repo
+├── docs/
+│   ├── ARCHITECTURE.md
+│   ├── PERSISTENCE-DESIGN.md
+│   └── adr/
+├── api/
+│   ├── app/
+│   │   ├── api/routes/
+│   │   ├── schemas/
+│   │   └── services/
+│   └── data/
+│       ├── coros_sessions.json
+│       └── uploads/
+└── web/
+    └── src/app/page.tsx
+```
+
+## 12. Suggested Reading Order For Another AI
+
+If you only have 5 minutes:
+1. Read [wiki.repo](/home/ethan/work/projects/running-ai-coach/wiki.repo)
+2. Read [AGENTS.md](/home/ethan/work/projects/running-ai-coach/AGENTS.md)
+3. Read [docs/ARCHITECTURE.md](/home/ethan/work/projects/running-ai-coach/docs/ARCHITECTURE.md)
+4. Read [api/app/api/routes/chat.py](/home/ethan/work/projects/running-ai-coach/api/app/api/routes/chat.py)
+5. Read [api/app/services/chat_orchestrator.py](/home/ethan/work/projects/running-ai-coach/api/app/services/chat_orchestrator.py)
+6. Read [api/app/services/analysis_engine.py](/home/ethan/work/projects/running-ai-coach/api/app/services/analysis_engine.py)
+
+If you are changing product behaviour:
+1. confirm whether the change belongs in `chat_orchestrator`, `analysis_engine`, `report_builder`, or `coach_commentary`
+2. keep rule-layer facts deterministic
+3. do not move numeric truth into the LLM
+4. check whether the change affects COROS flow, FIT flow, or both
+
+## 13. Practical Dev Notes
+
+Typical commands:
+
+Backend:
+```bash
+cd api
+python3 -m venv .venv
+source .venv/bin/activate
+pip install -e .
+uvicorn app.main:app --reload --port 8010
+```
+
+Frontend:
+```bash
+cd web
+npm install
+npm run dev
+```
+
+Useful validation:
+```bash
+cd web && npm run lint
+cd api && .venv/bin/python -c "from app.api.router import api_router; print('ok')"
+```
+
+## 14. What To Trust Most
+
+When docs disagree, trust in this order:
+1. route files in `api/app/api/routes/`
+2. service implementations in `api/app/services/`
+3. frontend page in `web/src/app/page.tsx`
+4. [docs/ARCHITECTURE.md](/home/ethan/work/projects/running-ai-coach/docs/ARCHITECTURE.md)
+5. [README.md](/home/ethan/work/projects/running-ai-coach/README.md)
+
+That order matters because the repo has evolved from an upload-first MVP into a COROS chat-first product, and some higher-level docs may lag the code.
