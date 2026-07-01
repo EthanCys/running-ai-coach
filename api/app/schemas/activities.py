@@ -71,6 +71,7 @@ class CoachCommentary(BaseModel):
     model: str | None = None
     prompt_context: dict[str, object]
     summary: str
+    key_findings: list[str] = []
     strengths: list[str]
     watchouts: list[str]
     next_steps: list[str]

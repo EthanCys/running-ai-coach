@@ -29,8 +29,9 @@ def build_coach_commentary(
     analysis: dict,
     report: dict,
     context: "CorosContext | None" = None,
+    history: list[dict] | None = None,
 ) -> dict:
-    prompt_context = _build_prompt_context(activity, analysis, report, context)
+    prompt_context = _build_prompt_context(activity, analysis, report, context, history)
     fallback = _build_fallback_commentary(activity, analysis, context)
 
     llm_commentary = _build_llm_commentary(prompt_context)
@@ -48,17 +49,40 @@ def build_coach_commentary(
 # ── LLM call ─────────────────────────────────────────────────────────────────
 
 _SYSTEM_PROMPT = """\
-你是一位用「伙伴型」风格与跑者沟通的专业跑步教练（参照 SKILL.md 风格 D）。
+你是一位精英跑步教练，用数据驱动的方式分析训练，风格专业但口语化（伙伴型，参照 SKILL.md 风格 D）。
 
-【硬性约束，违反即为失败】
-1. 只能使用 user 消息中提供的事实；不得虚构任何指标、配速或诊断。
-2. 必须区分工作段（interval/work）与恢复段（recovery/cooldown），不能只看全程平均配速。
-3. 建议必须与规则层输出一致（fatigue_risk_level、training_type、recommendation）。
-4. Level 1 紧急信号（hrv_drop_pct≥20 或 rhr_spike_bpm≥7）优先于一切建议，必须在 next_steps 中体现。
-5. 严格返回 JSON，键为 summary、strengths、watchouts、next_steps，值均为简体中文。
-   summary 是字符串；其余三个是短句数组（每项不超过40字）。
-6. 风格：先肯定→再指出问题→最后给方案；口语化，适度 emoji（最多2个）；
-   禁止「加油」「Fighting」「💪」等空泛激励。
+【思考框架 — 必须按此顺序推理】
+1. 定性：先判断这是什么训练（间歇/阈值/长距离/恢复/渐进）。依据是工作段结构，不是全程均值。
+2. 分段解读：必须分别解读工作段与恢复段。间歇跑质量看工作段配速 + 组间心率回落，
+   绝不能用全程平均配速评判间歇质量。
+3. 交叉印证：用多个指标互相验证同一个结论，单一指标不下结论。
+   例如「心率漂移低 + 配速稳定 + 触地时间稳定 → 后程没有失代偿」。
+4. 给方案：建议必须落到具体的下一次训练（配速区间、距离、强度），不要泛泛而谈。
+
+【量化评级锚点 — 用这些标准解读数据，不要含糊其辞】
+- 触地时间 GCT：<200ms 精英 | 200-250ms 良好 | >250ms 待改善
+- 垂直振幅比 VR：<6% 优秀 | 6-8% 良好 | >8% 偏高
+- 心率漂移 cardiac drift：<5% 优秀 | 5-8% 正常 | >8% 后程失代偿
+- HRR-60（1分钟心率回落）：>30bpm 精英 | 20-30 良好 | <20 待观察
+- 有氧解耦率：<5% 精英耐力 | 5-10% 达标 | >10% 后程效率衰减
+- 步频：170-185spm 是理想区间（配速越快步频越高）
+
+【硬性约束 — 违反即为失败】
+1. 只能使用 user 消息中提供的事实；不得虚构任何指标、配速或诊断。没有的数据就说「本次未记录」。
+2. 必须区分工作段（interval/work）与恢复段（recovery/cooldown），禁止用全程平均配速判断间歇质量。
+3. 结论必须与规则层输出一致（training_type、fatigue_risk_level、recommendation）。
+4. Level 1 紧急信号（hrv_drop_pct≥20 或 rhr_spike_bpm≥7）优先于一切建议，必须放在 next_steps 第一条。
+5. 不做医疗诊断；禁止「加油」「Fighting」「💪」等空泛激励。
+6. 若提供了 history（历史同类训练），必须做纵向对比（如「触地从上次 205ms 降到今天 198ms」）。
+
+【输出格式】
+严格返回 JSON，键为 summary、key_findings、strengths、watchouts、next_steps，值均为简体中文：
+- summary：字符串，2-4 句话，点明训练定性 + 最重要的 1 个发现。
+- key_findings：短句数组，每项是「指标 + 数值 + 评级 + 含义」的完整解读，允许展开细节（每项不超过80字）。
+- strengths、watchouts：短句数组（每项不超过40字）。
+- next_steps：短句数组，每项是具体可执行的下一步，带配速/距离/强度（每项不超过50字）。
+风格：先肯定→再指出问题→最后给方案；口语化，适度 emoji（最多2个）。
+允许在 key_findings 里展开专业细节，不要为了简短牺牲专业度。
 """
 
 
@@ -69,7 +93,8 @@ def _build_llm_commentary(prompt_context: dict) -> dict | None:
 
     payload = {
         "model": config["model"],
-        "temperature": 0.3,
+        "temperature": 0.5,
+        "max_tokens": 2000,
         "messages": [
             {"role": "system", "content": _SYSTEM_PROMPT},
             {"role": "user", "content": json.dumps(prompt_context, ensure_ascii=False)},
@@ -105,6 +130,7 @@ def _build_llm_commentary(prompt_context: dict) -> dict | None:
         "model": config["model"],
         "prompt_context": prompt_context,
         "summary": parsed["summary"],
+        "key_findings": parsed.get("key_findings", [])[:6],
         "strengths": parsed["strengths"][:3],
         "watchouts": parsed["watchouts"][:3],
         "next_steps": parsed["next_steps"][:3],
@@ -118,6 +144,7 @@ def _build_prompt_context(
     analysis: dict,
     report: dict,
     context: "CorosContext | None",
+    history: list[dict] | None = None,
 ) -> dict:
     ctx_dict: dict = {}
     if context is not None:
@@ -167,12 +194,31 @@ def _build_prompt_context(
             }
             for s in activity.segments
         ],
+        "per_km_splits": [
+            {
+                "km": sp.km_index,
+                "pace_sec": sp.avg_pace_sec_per_km,
+                "hr_bpm": sp.avg_heart_rate_bpm,
+                "stance_ms": sp.avg_stance_time_ms,
+                "step_len_m": sp.avg_step_length_m,
+            }
+            for sp in activity.km_splits
+        ],
+        "split_comparison": _km_split_comparison(activity.km_splits),
         "report": {
             "verdict": report["verdict"],
             "recommendation": report["recommendation"],
             "risks": report["risks"],
         },
         "coros_context": ctx_dict,
+        "rating_thresholds": {
+            "stance_time_ms": {"elite": "<200", "good": "200-250", "poor": ">250"},
+            "vertical_ratio_pct": {"excellent": "<6", "good": "6-8", "high": ">8"},
+            "hr_drift_pct": {"excellent": "<5", "normal": "5-8", "decoupled": ">8"},
+            "cadence_spm": {"ideal": "170-185"},
+            "efficiency_note": "ef_ratio 只在同类训练纵向对比时有意义，单次不作绝对评分。",
+        },
+        "history": history or [],
         "adjustment_flags": {
             "level1_emergency": level1_triggered,
             "level2_high_fatigue": analysis.get("fatigue_risk_level") == "high",
@@ -193,6 +239,46 @@ def _build_prompt_context(
     }
 
 
+def _km_split_comparison(km_splits: list) -> dict:
+    """Compare first vs second half of km splits — reveals negative/positive
+    split and mechanical fade. Returns empty dict when insufficient data."""
+    paced = [s for s in km_splits if s.avg_pace_sec_per_km is not None]
+    if len(paced) < 4:
+        return {}
+    mid = len(paced) // 2
+    first, second = paced[:mid], paced[mid:]
+
+    def _avg(items, attr):
+        vals = [getattr(i, attr) for i in items if getattr(i, attr) is not None]
+        return round(sum(vals) / len(vals), 1) if vals else None
+
+    first_pace = _avg(first, "avg_pace_sec_per_km")
+    second_pace = _avg(second, "avg_pace_sec_per_km")
+    pattern = "unknown"
+    if first_pace and second_pace:
+        delta = second_pace - first_pace
+        if delta <= -5:
+            pattern = "negative_split"
+        elif delta >= 5:
+            pattern = "positive_split"
+        else:
+            pattern = "even_split"
+
+    return {
+        "first_half": {
+            "avg_pace_sec": first_pace,
+            "avg_hr_bpm": _avg(first, "avg_heart_rate_bpm"),
+            "avg_stance_ms": _avg(first, "avg_stance_time_ms"),
+        },
+        "second_half": {
+            "avg_pace_sec": second_pace,
+            "avg_hr_bpm": _avg(second, "avg_heart_rate_bpm"),
+            "avg_stance_ms": _avg(second, "avg_stance_time_ms"),
+        },
+        "pace_pattern": pattern,
+    }
+
+
 # ── deterministic fallback ────────────────────────────────────────────────────
 
 def _build_fallback_commentary(
@@ -205,6 +291,7 @@ def _build_fallback_commentary(
     fatigue = analysis["fatigue_risk_level"]
     ef_ratio = analysis.get("ef_ratio")
     mechanics = analysis.get("mechanics_stability_score")
+    recovery_hr_drop_bpm = analysis.get("recovery_hr_drop_bpm")
 
     ef_str = f"（有氧效率系数 {ef_ratio}）" if ef_ratio is not None else ""
     summary = (
@@ -251,8 +338,26 @@ def _build_fallback_commentary(
     if mechanics is not None and mechanics < 75:
         next_steps.append("后程要多关注步频和触地时间，避免动作走形。")
 
+    # key_findings: 用规则层已算好的数值 + 评级锚点，给出量化解读
+    key_findings = []
+    gct = activity.metrics.avg_stance_time_ms
+    if gct is not None and gct > 0:
+        rating = "精英" if gct < 200 else ("良好" if gct <= 250 else "待改善")
+        key_findings.append(f"触地时间 {gct:.0f}ms（{rating}）。")
+    drift = activity.metrics.hr_drift_pct
+    if drift is not None:
+        rating = "优秀" if drift < 5 else ("正常" if drift <= 8 else "后程失代偿")
+        key_findings.append(f"心率漂移 {drift:.1f}%（{rating}），反映后程心血管代价。")
+    if ef_ratio is not None:
+        key_findings.append(f"有氧效率系数 {ef_ratio}（仅用于同类训练纵向对比）。")
+    if mechanics is not None:
+        key_findings.append(f"动作稳定性 {mechanics}/100。")
+    if recovery_hr_drop_bpm is not None:
+        key_findings.append(f"工作段与恢复段心率差 {recovery_hr_drop_bpm}bpm，恢复质量{_recovery_quality_zh(recovery_quality)}。")
+
     return {
         "summary": summary,
+        "key_findings": key_findings[:6],
         "strengths": strengths[:3],
         "watchouts": watchouts[:3],
         "next_steps": next_steps[:3],
@@ -327,13 +432,24 @@ def _parse_llm_json(content: str) -> dict | None:
     strengths, watchouts, next_steps = (
         payload.get("strengths"), payload.get("watchouts"), payload.get("next_steps")
     )
+    # key_findings is optional for backward compatibility; default to empty list.
+    key_findings = payload.get("key_findings", [])
+    if not isinstance(key_findings, list):
+        key_findings = []
     if not isinstance(summary, str):
         return None
     if not all(isinstance(v, list) for v in [strengths, watchouts, next_steps]):
         return None
     if not all(isinstance(i, str) for lst in [strengths, watchouts, next_steps] for i in lst):
         return None
-    return {"summary": summary, "strengths": strengths, "watchouts": watchouts, "next_steps": next_steps}
+    key_findings = [i for i in key_findings if isinstance(i, str)]
+    return {
+        "summary": summary,
+        "key_findings": key_findings,
+        "strengths": strengths,
+        "watchouts": watchouts,
+        "next_steps": next_steps,
+    }
 
 
 def _training_type_zh(value: str) -> str:

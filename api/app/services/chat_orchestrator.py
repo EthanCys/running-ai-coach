@@ -19,6 +19,7 @@ from app.services.coros_adapter import build_parsed_activity, CorosContext
 from app.services.analysis_engine import build_activity_analysis
 from app.services.report_builder import build_activity_report
 from app.services.coach_commentary import build_coach_commentary
+from app.services import history_store
 
 RUNNING_CODES = [100, 101, 102, 103]
 
@@ -88,7 +89,30 @@ async def _analyze_latest(access_token: str | None, intent: str) -> dict:
     parsed, ctx = build_parsed_activity(detail, laps, CorosContext())
     analysis = build_activity_analysis(parsed)
     report = build_activity_report(parsed, analysis)
-    commentary = build_coach_commentary(parsed, analysis, report, ctx)
+
+    # Longitudinal history: read prior same-type sessions, then record this one.
+    training_type = analysis.get("training_type", "unknown")
+    history = history_store.recent_same_type(
+        user_id="default",
+        training_type=training_type,
+        exclude_activity_id=str(label_id),
+        limit=5,
+    )
+    commentary = build_coach_commentary(parsed, analysis, report, ctx, history)
+
+    history_store.record_activity(
+        user_id="default",
+        activity_id=str(label_id),
+        training_type=training_type,
+        date=str(_field(latest, "date", "startDate", "startTime") or ""),
+        metrics={
+            "avg_pace_sec": parsed.metrics.avg_pace_sec_per_km,
+            "avg_hr_bpm": parsed.metrics.avg_heart_rate_bpm,
+            "hr_drift_pct": parsed.metrics.hr_drift_pct,
+            "stance_ms": parsed.metrics.avg_stance_time_ms,
+            "ef_ratio": analysis.get("ef_ratio"),
+        },
+    )
 
     reply = commentary["summary"]
     card = _build_report_card(parsed, analysis, report, commentary, label_id, int(sport_type))
@@ -155,6 +179,7 @@ def _build_report_card(parsed, analysis, report, commentary, label_id, sport_typ
             "source": commentary["source"],
             "model": commentary["model"],
             "summary": commentary["summary"],
+            "key_findings": commentary.get("key_findings", []),
             "strengths": commentary["strengths"],
             "watchouts": commentary["watchouts"],
             "next_steps": commentary["next_steps"],

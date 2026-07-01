@@ -25,6 +25,7 @@ from app.services.fit_parser import FitParserError, parse_fit_activity
 from app.services.coros_adapter import build_parsed_activity, CorosContext
 from app.services.analysis_engine import build_activity_analysis
 from app.services.coach_commentary import build_coach_commentary
+from app.services import history_store
 from app.services.report_builder import build_activity_report
 from app.api.routes.auth import get_session_token
 
@@ -63,7 +64,31 @@ async def upload_activity(file: UploadFile = File(...)) -> ActivityUploadRespons
 
     analysis = build_activity_analysis(parsed_activity)
     report = build_activity_report(parsed_activity, analysis)
-    coach_commentary = build_coach_commentary(parsed_activity, analysis, report)
+
+    training_type = analysis.get("training_type", "unknown")
+    history = history_store.recent_same_type(
+        user_id="default",
+        training_type=training_type,
+        exclude_activity_id=activity_id,
+        limit=5,
+    )
+    coach_commentary = build_coach_commentary(
+        parsed_activity, analysis, report, None, history
+    )
+
+    history_store.record_activity(
+        user_id="default",
+        activity_id=activity_id,
+        training_type=training_type,
+        date=parsed_activity.start_time.strftime("%Y-%m-%d") if parsed_activity.start_time else None,
+        metrics={
+            "avg_pace_sec": parsed_activity.metrics.avg_pace_sec_per_km,
+            "avg_hr_bpm": parsed_activity.metrics.avg_heart_rate_bpm,
+            "hr_drift_pct": parsed_activity.metrics.hr_drift_pct,
+            "stance_ms": parsed_activity.metrics.avg_stance_time_ms,
+            "ef_ratio": analysis.get("ef_ratio"),
+        },
+    )
 
     return ActivityUploadResponse(
         activity_id=activity_id,

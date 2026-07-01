@@ -28,6 +28,19 @@ class ParsedFitActivity:
     laps: list[ParsedFitLap]
     segments: list[ParsedFitSegment]
     metrics: ParsedFitMetrics
+    km_splits: list["ParsedFitKmSplit"]
+
+
+@dataclass(slots=True)
+class ParsedFitKmSplit:
+    """Per-kilometer breakdown — the basis for professional split-by-split analysis."""
+    km_index: int  # 1-based
+    distance_m: float
+    duration_sec: float
+    avg_pace_sec_per_km: float | None
+    avg_heart_rate_bpm: float | None
+    avg_stance_time_ms: float | None
+    avg_step_length_m: float | None
 
 
 @dataclass(slots=True)
@@ -199,6 +212,7 @@ def parse_fit_activity(file_path: Path) -> ParsedFitActivity:
 
     cleaned_records, hr_outlier_count = _clean_records(records)
     segments = _build_segments(cleaned_records)
+    km_splits = _build_km_splits(cleaned_records)
 
     metrics = _build_metrics(
         total_timer_time_sec=total_timer_time_sec,
@@ -224,6 +238,7 @@ def parse_fit_activity(file_path: Path) -> ParsedFitActivity:
         laps=laps,
         segments=segments,
         metrics=metrics,
+        km_splits=km_splits,
     )
 
 
@@ -421,6 +436,55 @@ def _nearest_valid_value(values: list[int | None], start_index: int, step: int) 
             return values[index]
         index += step
     return None
+
+
+def _build_km_splits(records: list[RecordSample]) -> list[ParsedFitKmSplit]:
+    """Split records into per-kilometer buckets using cumulative distance.
+
+    Each split reports pace (from time delta), avg HR, avg stance time and avg
+    step length — the per-km detail a coach needs to read pacing strategy,
+    negative splits, and mechanical fade across the run.
+    """
+    pts = [
+        r for r in records
+        if r.distance_m is not None and r.timestamp is not None
+    ]
+    if len(pts) < 2:
+        return []
+
+    splits: list[ParsedFitKmSplit] = []
+    km_index = 1
+    bucket_start_idx = 0
+    next_mark = 1000.0
+    base_distance = pts[0].distance_m or 0.0
+
+    for i, r in enumerate(pts):
+        dist = (r.distance_m or 0.0) - base_distance
+        if dist >= next_mark or i == len(pts) - 1:
+            bucket = pts[bucket_start_idx : i + 1]
+            if len(bucket) >= 2:
+                seg_dist = (bucket[-1].distance_m or 0.0) - (bucket[0].distance_m or 0.0)
+                seg_time = _duration_between(bucket[0], bucket[-1])
+                hrs = [b.heart_rate_bpm for b in bucket if b.heart_rate_bpm is not None]
+                gcts = [b.stance_time_ms for b in bucket if b.stance_time_ms is not None and b.stance_time_ms > 0]
+                sls = [b.step_length_m for b in bucket if b.step_length_m is not None and b.step_length_m > 0]
+                pace = round(seg_time / (seg_dist / 1000), 1) if seg_dist > 0 and seg_time > 0 else None
+                splits.append(
+                    ParsedFitKmSplit(
+                        km_index=km_index,
+                        distance_m=round(seg_dist, 1),
+                        duration_sec=round(seg_time, 1),
+                        avg_pace_sec_per_km=pace,
+                        avg_heart_rate_bpm=round(fmean(hrs), 1) if hrs else None,
+                        avg_stance_time_ms=round(fmean(gcts), 1) if gcts else None,
+                        avg_step_length_m=round(fmean(sls), 3) if sls else None,
+                    )
+                )
+                km_index += 1
+            bucket_start_idx = i + 1
+            next_mark += 1000.0
+
+    return splits
 
 
 def _build_segments(records: list[RecordSample]) -> list[ParsedFitSegment]:

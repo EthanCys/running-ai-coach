@@ -132,6 +132,9 @@ def build_parsed_activity(
         laps=laps,
         segments=segments,
         metrics=metrics,
+        # COROS detail exposes laps, not per-second records, so per-km splits
+        # cannot be reconstructed here. FIT upload path provides full km_splits.
+        km_splits=[],
     )
 
     return activity, ctx

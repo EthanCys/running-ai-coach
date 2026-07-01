@@ -9,6 +9,7 @@ web/.env*.local
 
 # ── user data ──
 api/data/uploads/
+api/data/history/
 
 # ── python ──
 api/.venv/
