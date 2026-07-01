@@ -329,7 +329,12 @@ async def _fetch_coros_activity(
     COROS_ACCESS_TOKEN env var.
     """
     coros_token = access_token or _load_coros_token()
-    headers = {"Authorization": f"Bearer {coros_token}"} if coros_token else {}
+    headers = {
+        "Content-Type": "application/json",
+        "Accept": "application/json, text/event-stream",
+    }
+    if coros_token:
+        headers["Authorization"] = f"Bearer {coros_token}"
 
     async with httpx.AsyncClient(timeout=30) as client:
         # getActivityDetail
