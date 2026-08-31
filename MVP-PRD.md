@@ -1,10 +1,17 @@
 # Running AI Coach MVP PRD
 
+> Status: this document is the original MVP product brief.
+> Current implementation truth lives in [README.md](README.md) and
+> [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+> The shipped product has evolved from upload-first planning toward a
+> COROS-connected, chat-first workflow, so treat this file as scope intent and
+> product rationale, not as a literal description of today's UX.
+
 ## 1. Product Summary
 
 Running AI Coach is a post-run analysis product for runners who have watch data but do not understand how to interpret it.
 
-The first version turns uploaded running workout files into:
+The original MVP concept turned uploaded running workout files into:
 
 - a plain-language training recap,
 - a short list of important findings,
@@ -78,6 +85,10 @@ The product wins if users feel the output is:
 
 ## 7. MVP Scope
 
+Note: this section describes the original upload-first MVP scope. The current
+repo also includes COROS OAuth, chat-first analysis, and lightweight local
+history support.
+
 ### In Scope
 
 1. Upload one or more FIT files.
@@ -90,7 +101,7 @@ The product wins if users feel the output is:
 
 ### Out of Scope
 
-1. Sync with Garmin, Strava, Apple Health, Coros, Polar, or Suunto.
+1. Sync with Garmin, Strava, Apple Health, Polar, or Suunto.
 2. Mobile app.
 3. Wearable or sensor pairing.
 4. Race prediction engine.
@@ -120,6 +131,8 @@ As a runner, I want to ask follow-up questions so that I can learn unfamiliar co
 As a runner, I want a next-step recommendation so that I know what to do on the next run instead of just reading a report.
 
 ## 9. MVP Experience Flow
+
+Original planned flow:
 
 1. User lands on the web app.
 2. User uploads one or more FIT files.
@@ -217,6 +230,9 @@ These can be calculated but hidden unless useful:
 
 ## 13. Functional Requirements
 
+These requirements describe the original MVP target. Some are now partially
+implemented in lightweight form rather than as full product capabilities.
+
 ### Data Input
 
 - User can upload FIT files from desktop.
@@ -286,6 +302,9 @@ Test willingness to pay for historical insights and personalized recommendations
 4. Is the best initial customer an individual runner or a coach?
 
 ## 18. Immediate Next Steps
+
+Historical note: most items below were the initial build sequence and are no
+longer a current task list for the repository.
 
 1. Build FIT upload and parsing pipeline.
 2. Implement first 5 derived metrics.

@@ -1,8 +1,16 @@
 # Running AI Coach Technical Spec
 
+> Status: this file captures the original target architecture and build plan.
+> For the current implementation, use [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)
+> as the source of truth and [README.md](README.md) for runtime and entrypoint
+> guidance.
+> The repo now implements a COROS-connected, chat-first MVP with lightweight
+> local persistence, so some sections below intentionally describe a broader
+> future-state design.
+
 ## 1. Objective
 
-Design a production-oriented MVP that converts running workout files into structured metrics, readable reports, and explainable AI-driven guidance.
+Design a production-oriented MVP that converts running workout data into structured metrics, readable reports, and explainable AI-driven guidance.
 
 The system should be reliable enough to support repeated analysis, not just one-off demo output.
 
@@ -15,6 +23,9 @@ The system should be reliable enough to support repeated analysis, not just one-
 5. The first version optimizes for correctness, not breadth.
 
 ## 3. Suggested Stack
+
+Note: several items below are future-state recommendations, not hard
+requirements for the current repository.
 
 ### Frontend
 
@@ -44,6 +55,8 @@ The system should be reliable enough to support repeated analysis, not just one-
 - Prompt input should be structured JSON plus user question
 
 ## 4. High-Level System Design
+
+Original target architecture:
 
 ```mermaid
 flowchart TD
@@ -109,6 +122,8 @@ Responsibilities:
 - explain surfaced concepts using grounded metrics only.
 
 ## 6. Data Flow
+
+Original upload-first flow:
 
 1. User uploads FIT file.
 2. Backend stores raw file and creates activity row.
@@ -183,6 +198,10 @@ The system should normalize all activity data into a common schema so future TCX
 ```
 
 ## 8. Database Tables
+
+These tables describe a recommended durable data model, not the current MVP
+storage layout. The repo currently uses lightweight local JSON and JSONL files
+for OAuth sessions, uploads, and same-type workout history.
 
 Recommended initial tables:
 
@@ -523,6 +542,9 @@ Purpose:
 
 ## 15. File and Service Layout
 
+This section is intentionally aspirational. The actual current layout is the
+root-level `api/` + `web/` split documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Suggested monorepo shape:
 
 ```text
@@ -549,6 +571,8 @@ running-ai-coach/
 ```
 
 ## 16. Build Sequence
+
+Historical implementation plan:
 
 ### Week 1
 
@@ -640,6 +664,9 @@ Mitigation:
 - prefer one sharp recommendation over many vague observations.
 
 ## 20. Immediate Build Tasks
+
+Historical note: these tasks were largely the original implementation queue and
+should not be treated as the current repo backlog.
 
 1. Pick backend language and FIT parsing library.
 2. Define normalized activity and sample schema in code.

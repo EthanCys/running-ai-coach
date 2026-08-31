@@ -1,86 +1,246 @@
 # Architecture
 
-This is the **current** source of truth for how the system works today.
-For *why* each decision was made, see [adr/](adr/). For the eventual target
-design, see [../TECHNICAL-SPEC.md](../TECHNICAL-SPEC.md).
+This file is the current technical source of truth.
 
-## One-paragraph summary
+Use it for how the system works now.
+Use [adr/](adr/) for why decisions were made.
+Use [PERSISTENCE-DESIGN.md](PERSISTENCE-DESIGN.md) for the longer-term storage plan.
 
-Two data sources (COROS MCP, FIT upload) both map into one shared domain model,
-which flows through a deterministic rule layer (facts) and then an LLM language
-layer (words), producing one report JSON consumed by a single-page frontend.
-The system is currently stateless — see [adr/0005](adr/0005-statelessness-and-persistence-gap.md)
-and the persistence design in [PERSISTENCE-DESIGN.md](PERSISTENCE-DESIGN.md).
+## System summary
 
-## Component diagram
+Running AI Coach currently has two ingestion paths:
 
-```mermaid
-flowchart TD
-  subgraph sources [Data sources]
-    COROS[COROS MCP]
-    FIT[FIT file upload]
-  end
+- COROS OAuth + MCP-backed analysis
+- FIT upload fallback
 
-  COROS -->|getActivityDetail<br/>queryActivityLapData| ADAPT[coros_adapter.py]
-  FIT -->|fitdecode| PARSE[fit_parser.py]
+Both paths converge on one shared domain model and one downstream pipeline:
 
-  ADAPT --> MODEL[ParsedFitActivity<br/>shared domain model]
-  PARSE --> MODEL
+`source -> parsed activity -> deterministic analysis -> deterministic report -> LLM commentary`
 
-  MODEL --> ENGINE[analysis_engine.py<br/>RULE LAYER: facts]
-  ENGINE --> REPORT[report_builder.py<br/>structured report JSON]
-  REPORT --> LLM[coach_commentary.py<br/>LANGUAGE LAYER + fallback]
+The main product flow is now chat-first, not upload-first.
 
-  MODEL -.CorosContext.-> ALERTS[adjustment alerts<br/>L1 / L2 / L3]
-  ENGINE -.fatigue.-> ALERTS
+## Runtime shape
 
-  LLM --> RESP[JSON response]
-  REPORT --> RESP
-  ALERTS --> RESP
-  RESP --> UI[web/src/app/page.tsx]
+### Frontend
+
+The frontend is a single-page Next.js app in [web/src/app/page.tsx](/home/ethan/work/projects/running-ai-coach/web/src/app/page.tsx).
+
+Its responsibilities are intentionally thin:
+
+- initiate COROS OAuth
+- restore a saved COROS session from `localStorage`
+- send chat messages to the backend
+- render assistant replies, recent record lists, and structured report cards
+
+The frontend does not compute training truth.
+
+### Backend
+
+The backend is a FastAPI app in [api/app/main.py](/home/ethan/work/projects/running-ai-coach/api/app/main.py) with three route groups:
+
+- `auth` for COROS OAuth session lifecycle
+- `chat` for natural-language coach interaction
+- `activities` for direct analysis endpoints
+
+Combined router: [api/app/api/router.py](/home/ethan/work/projects/running-ai-coach/api/app/api/router.py)
+
+## Main flows
+
+### 1. COROS chat flow
+
+```text
+browser
+  -> /api/v1/auth/coros/login
+  -> COROS OAuth callback
+  -> browser stores session id
+  -> POST /api/v1/chat
+  -> chat_orchestrator
+  -> coros_client
+  -> coros_adapter
+  -> ParsedFitActivity
+  -> analysis_engine
+  -> report_builder
+  -> coach_commentary
+  -> chat response with reply + optional report card
 ```
 
-## Endpoints
+This is the primary user path today.
 
-| Method | Path | Purpose | Source |
-|--------|------|---------|--------|
-| GET  | `/healthz` | health check | — |
-| POST | `/api/v1/activities/analyze` | analyze a COROS activity by `labelId` + `sportType` | COROS MCP |
-| POST | `/api/v1/activities/upload`  | analyze an uploaded FIT file | FIT |
+### 2. FIT upload flow
 
-Both analysis endpoints return the same report shape (summary, metrics,
-analysis, report, coach_commentary). `/analyze` additionally returns
-`coros_context` and `adjustment_alerts`.
+```text
+client
+  -> POST /api/v1/activities/upload
+  -> fit_parser
+  -> ParsedFitActivity
+  -> analysis_engine
+  -> report_builder
+  -> coach_commentary
+  -> structured activity response
+```
 
-## The shared domain model
+This remains useful as a fallback path and a backend test surface.
 
-`ParsedFitActivity` (in `services/fit_parser.py`) is the contract. Key nested
-types:
+## Core components
 
-- `ParsedFitMetrics` — avg pace, pace stability/fade, HR, HR drift, cadence,
-  step length, stance time, interval/recovery counts.
-- `ParsedFitLap` — per-lap distance/time/pace/HR.
-- `ParsedFitSegment` — classified segments (`warmup` / `interval` / `recovery` /
-  `cooldown` / `steady_run`), the basis for separating work vs rest.
+### Shared domain model
 
-`CorosContext` (in `services/coros_adapter.py`) is the **side channel** for
-signals that don't belong in a FIT-shaped model: recovery %, sleep HRV, resting
-HR, training load ATL/CTL, and the L1 trigger deltas (`hrv_drop_pct`,
-`rhr_spike_bpm`).
+The architectural center is `ParsedFitActivity`.
 
-## The two layers
+Why it matters:
 
-**Rule layer** (`analysis_engine.py`, `report_builder.py`) — deterministic.
-Produces training type, EF ratio, recovery quality, fatigue risk, mechanics
-score, intensity level, findings, risks, and the next-run recommendation.
+- COROS data and FIT data are normalized into the same shape
+- the rule layer stays independent from source-specific payloads
+- new data sources should adapt into this model instead of bypassing it
 
-**Language layer** (`coach_commentary.py`) — the LLM rephrases the rule-layer
-facts into `summary` / `strengths` / `watchouts` / `next_steps`. A deterministic
-fallback covers the no-LLM case. See [adr/0001](adr/0001-rule-layer-first.md).
+Important nested data includes:
+
+- summary/session fields
+- lap list
+- segment list
+- metric bundle
+- per-km split data where available
+
+### COROS integration
+
+[api/app/services/coros_client.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coros_client.py) is the thin HTTP/JSON-RPC wrapper over COROS MCP.
+
+[api/app/services/coros_adapter.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coros_adapter.py) maps COROS payloads into the shared model and optional context.
+
+COROS context is a side channel for signals such as:
+
+- recovery percent
+- sleep HRV
+- resting HR
+- training load
+- L1 alert triggers like `hrv_drop_pct` and `rhr_spike_bpm`
+
+### FIT parsing
+
+[api/app/services/fit_parser.py](/home/ethan/work/projects/running-ai-coach/api/app/services/fit_parser.py) parses FIT files into the same shared activity model.
+
+The parser remains important because it enforces the same downstream contract as COROS.
+
+### Chat orchestration
+
+[api/app/services/chat_orchestrator.py](/home/ethan/work/projects/running-ai-coach/api/app/services/chat_orchestrator.py) is the product-control layer.
+
+It is responsible for:
+
+- detecting coarse user intent
+- fetching the right COROS records
+- deciding when to analyze the latest run versus list recent runs
+- assembling the compact report card included in chat replies
+
+This is deterministic keyword routing, not a general autonomous planner.
+
+### Rule layer
+
+The rule layer lives in [api/app/services/analysis_engine.py](/home/ethan/work/projects/running-ai-coach/api/app/services/analysis_engine.py) and [api/app/services/report_builder.py](/home/ethan/work/projects/running-ai-coach/api/app/services/report_builder.py).
+
+Responsibilities:
+
+- classify training type
+- estimate intensity level
+- compute EF ratio
+- judge recovery quality
+- score fatigue risk
+- estimate mechanics stability
+- build a deterministic Chinese verdict, findings, risks, and next-step recommendation
+
+Important invariant:
+
+- numeric and categorical truth must be computed here, not by the LLM
+
+### Language layer
+
+[api/app/services/coach_commentary.py](/home/ethan/work/projects/running-ai-coach/api/app/services/coach_commentary.py) is the only LLM-calling layer.
+
+Responsibilities:
+
+- package grounded context for the model
+- keep prompt rules aligned with the running-coach skill
+- produce coach-style Chinese explanation
+- fall back deterministically if the model is unavailable or returns unusable output
+
+Current output shape includes:
+
+- `summary`
+- `key_findings`
+- `strengths`
+- `watchouts`
+- `next_steps`
+
+## Persistence reality
+
+This repo is no longer fully stateless, but it is still far from a full persistence layer.
+
+Current lightweight storage:
+
+- COROS OAuth sessions persisted to `api/data/coros_sessions.json`
+- uploaded FIT files stored under `api/data/uploads/`
+- same-type workout history appended to JSONL files under `api/data/history/`
+
+Current limitations:
+
+- no real multi-user identity model
+- no durable relational data model
+- `history_store` still uses a default local user path for MVP behavior
+- no production-grade encrypted token persistence
+
+This means the app has lightweight memory, not full user persistence.
+
+## Current API surface
+
+System:
+
+- `GET /healthz`
+
+Auth:
+
+- `GET /api/v1/auth/coros/login`
+- `GET /api/v1/auth/coros/callback`
+- `GET /api/v1/auth/coros/status`
+- `POST /api/v1/auth/coros/logout`
+
+Chat:
+
+- `POST /api/v1/chat`
+- `GET /api/v1/chat/presets`
+
+Activities:
+
+- `POST /api/v1/activities/upload`
+- `POST /api/v1/activities/analyze`
 
 ## Configuration
 
-`api/.env.local` (copy from `.env.example`):
+Important runtime configuration:
 
-- `LLM_API_KEY`, `LLM_MODEL`, `LLM_BASE_URL` — OpenAI-compatible LLM.
-- `COROS_ACCESS_TOKEN` — only for standalone server use; MCP hosts handle auth.
+- `LLM_API_KEY`
+- `LLM_MODEL`
+- `LLM_BASE_URL`
+- `BACKEND_BASE_URL`
+- `WEB_BASE_URL`
+- `COROS_ACCESS_TOKEN`
+
+Important local convention:
+
+- the current frontend and OAuth defaults assume backend port `8010`
+- older docs and earlier commands may still mention `8000`
+
+If local development behaves inconsistently, check port assumptions first.
+
+## Constraints and likely next bottlenecks
+
+1. The frontend is still a single large page component.
+2. The backend has clear domain layering, but limited automated tests.
+3. Lightweight history exists, but real multi-user persistence does not.
+4. Docs can drift because the project evolved from upload-first MVP to chat-first product.
+
+That makes the next likely pressure points:
+
+- user identity and history model
+- trend analysis over longer windows
+- document consolidation and drift control
+- rule-layer test coverage

@@ -11,6 +11,8 @@ this app is the bridge between raw watch data and an actionable explanation.
 
 Primary data source is the **COROS MCP** (live watch data, low friction).
 FIT file upload is a **fallback** for platforms without an MCP.
+The current user-facing product is **chat-first**: connect COROS, ask a coach
+question, and receive a grounded explanation plus an optional report card.
 
 ## Golden rule (do not break)
 
@@ -27,52 +29,67 @@ See [docs/adr/0001-rule-layer-first.md](docs/adr/0001-rule-layer-first.md).
 
 ## Repository layout
 
-```
+```text
 running-ai-coach/
 ├── AGENTS.md              ← you are here
 ├── README.md              ← human-facing overview
 ├── MVP-PRD.md             ← product scope & requirements
 ├── TECHNICAL-SPEC.md      ← system design reference
+├── wiki.repo              ← short AI handoff summary
 ├── docs/
 │   ├── ARCHITECTURE.md    ← current data flow (source of truth)
 │   └── adr/               ← architecture decision records
 ├── api/                   ← FastAPI backend
 │   └── app/
+│       ├── api/routes/auth.py         ← COROS OAuth session flow
+│       ├── api/routes/chat.py         ← chat entrypoint
 │       ├── api/routes/activities.py   ← /upload (FIT) + /analyze (COROS)
 │       ├── services/
 │       │   ├── fit_parser.py          ← FIT → ParsedFitActivity
 │       │   ├── coros_adapter.py       ← COROS MCP → ParsedFitActivity
+│       │   ├── chat_orchestrator.py   ← intent routing + report card assembly
 │       │   ├── analysis_engine.py     ← rule layer: facts
 │       │   ├── report_builder.py      ← structured report
-│       │   └── coach_commentary.py    ← LLM language layer (+ fallback)
+│       │   ├── coach_commentary.py    ← LLM language layer (+ fallback)
+│       │   └── history_store.py       ← lightweight same-type training history
 │       └── schemas/activities.py      ← pydantic response contracts
 └── web/                   ← Next.js frontend (single page app)
     └── src/app/page.tsx
 ```
 
-## Data flow (both entry points converge)
+## Data flow
 
-```
-COROS MCP  ─┐
-            ├─→ ParsedFitActivity ─→ analysis_engine ─→ report_builder ─→ coach_commentary ─→ JSON response
-FIT upload ─┘    (shared domain      (rule layer:        (structured       (LLM language +
-                  model)              facts)              report)            fallback)
+Primary chat path:
+
+```text
+browser → auth.py → chat.py → chat_orchestrator.py → coros_client.py / coros_adapter.py
+    → ParsedFitActivity → analysis_engine.py → report_builder.py → coach_commentary.py
+    → chat reply + optional report card
 ```
 
-`ParsedFitActivity` (defined in `fit_parser.py`) is the **shared domain model**.
-Any new data source must map into it; everything downstream is then free.
+Fallback FIT path:
+
+```text
+FIT upload → activities.py → fit_parser.py → ParsedFitActivity → analysis_engine.py
+      → report_builder.py → coach_commentary.py → JSON response
+```
+
+`ParsedFitActivity` is still the **shared domain model**. Any new data source
+must map into it before entering the rule layer.
 
 ## Build & run
 
 Backend:
+
 ```bash
 cd api
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e .
-uvicorn app.main:app --reload --port 8000
+uvicorn app.main:app --reload --port 8010
 ```
 
 Frontend:
+
 ```bash
 cd web && npm install && npm run dev   # http://localhost:3000
 ```
@@ -81,7 +98,7 @@ cd web && npm install && npm run dev   # http://localhost:3000
 
 ```bash
 # backend imports compile
-cd api && .venv/bin/python -c "from app.api.routes.activities import router; print('ok')"
+cd api && .venv/bin/python -c "from app.api.router import api_router; print('ok')"
 
 # frontend type-checks / lints
 cd web && npm run lint && npm run build
@@ -99,13 +116,17 @@ part that most needs tests).
   (HTTP, file, env) at the route layer or in clearly named helpers.
 - Chinese is the user-facing output language. Code, comments, and identifiers
   stay in English.
+- The frontend is thin by design. Put workout truth and coaching logic in backend
+  services, not in `page.tsx`.
 - Do not add a dependency without pinning a version range in `pyproject.toml`.
 
 ## Known gaps (good first contributions)
 
-1. **No persistence** — every analysis is stateless. Cross-session trends (a
-   core PRD value) need a user + activity store. See ADR 0005.
-2. **COROS context is manual** — HRV/RHR/recovery signals for L1/L2/L3 are
-   passed from the frontend. They should be auto-fetched server-side from the
-   MCP. See ADR 0004.
-3. **No tests** on the rule layer.
+1. **No real multi-user persistence** — there is lightweight local history and
+  disk-backed OAuth session storage, but no real user identity model or DB.
+2. **History is MVP-grade** — `history_store.py` writes JSONL with a default
+  local user path, which is useful for longitudinal prompting but not a full
+  trend engine.
+3. **COROS context is still incomplete** — some L1/L2/L3 signals should be
+  auto-fetched server-side instead of relying on caller-provided context.
+4. **No tests** on the core rule layer.

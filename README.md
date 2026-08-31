@@ -1,55 +1,101 @@
 # Running AI Coach
 
-Turns a runner's workout data into a readable, coach-style analysis: a plain
-plain-language recap, key findings, risk flags, and one concrete next-run
-recommendation — in Chinese.
+Running AI Coach is a Chinese-language running analysis app.
 
-The core bet: **runners have data but cannot interpret it.** This app is the
-bridge between raw watch data and an actionable explanation.
+The current product path is:
 
-## How it works
+- connect a COROS account
+- ask for a workout review in chat
+- get a coach-style explanation grounded in deterministic metrics
 
-- **Primary data source: COROS MCP** — connect your watch account and the app
-  reads your activities directly (low friction, no file export).
-- **Fallback: FIT file upload** — for platforms without an MCP.
-- **Rule layer computes the facts; the LLM only puts them into words.** Numeric
-  truth is deterministic and reproducible; the LLM never invents metrics.
+FIT upload still exists, but it is now a fallback ingestion path rather than the
+main user experience.
 
-## Documentation map
+## Product idea
 
-| Doc | What it covers |
-|-----|----------------|
-| [AGENTS.md](AGENTS.md) | Entry point for AI agents: layout, golden rule, build, conventions |
-| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Current data flow and components (source of truth) |
-| [docs/adr/](docs/adr/) | Architecture decision records (why each choice was made) |
-| [docs/PERSISTENCE-DESIGN.md](docs/PERSISTENCE-DESIGN.md) | User system, data sync, chat memory, trend analysis |
-| [MVP-PRD.md](MVP-PRD.md) | Product scope, users, flows, success metrics |
-| [TECHNICAL-SPEC.md](TECHNICAL-SPEC.md) | Long-form system design reference (target state) |
+The product bet is simple: runners already have data, but most cannot interpret
+it. This repo turns workout data into a readable explanation, with:
 
-## Project structure
+- training classification
+- workload and fatigue signals
+- structure-aware interpretation of work and recovery segments
+- one concrete next-step recommendation
 
-- `api/` — FastAPI backend: data adapters, rule-layer analysis, report + LLM commentary.
-- `web/` — Next.js single-page frontend: COROS analysis + FIT upload, report rendering.
+The key invariant is unchanged:
+
+**the rule layer computes facts; the LLM only turns those facts into language.**
+
+## Current architecture in one paragraph
+
+Two input paths feed one shared analysis pipeline.
+
+- COROS path: OAuth session -> MCP data fetch -> parsed activity -> rule layer -> report -> coach commentary
+- FIT path: FIT upload -> parser -> parsed activity -> rule layer -> report -> coach commentary
+
+The frontend is currently chat-first. The backend remains the real system core.
+
+## Repo layout
+
+- `api/` — FastAPI backend for auth, ingestion, analysis, and coach responses.
+- `web/` — Next.js frontend for COROS authorization and coach chat.
+- `docs/` — architecture, ADRs, and future persistence design.
+- `wiki.repo` — short AI-oriented orientation note for this repo.
 
 ## Quick start
 
 Backend:
+
 ```bash
 cd api
-python3 -m venv .venv && source .venv/bin/activate
+python3 -m venv .venv
+source .venv/bin/activate
 pip install -e .
-cp .env.example .env.local   # fill in LLM + COROS settings (optional)
-uvicorn app.main:app --reload --port 8000
+cp .env.example .env.local
+uvicorn app.main:app --reload --port 8010
 ```
 
 Frontend:
+
 ```bash
-cd web && npm install && npm run dev   # http://localhost:3000
+cd web
+npm install
+npm run dev
 ```
 
-## Current status
+Notes:
 
-A working **single-run analyser** for both COROS and FIT inputs, with
-three-tier (L1/L2/L3) adjustment alerts. It is **stateless** today — cross-run
-trends and chat memory (the core PRD value) are designed but not yet built; see
-[docs/PERSISTENCE-DESIGN.md](docs/PERSISTENCE-DESIGN.md).
+- the frontend defaults to `http://127.0.0.1:8010` for the backend
+- COROS OAuth routes also assume backend base `8010` unless overridden by env vars
+
+## What exists today
+
+- COROS OAuth login and session restore
+- chat-based coach interface
+- deterministic rule-layer analysis
+- LLM-backed commentary with deterministic fallback
+- FIT upload fallback
+- lightweight local history store for same-type workout comparison
+
+## What does not exist yet
+
+- real multi-user persistence
+- production-grade token storage
+- robust trend engine over long-term history
+- automated test coverage for the core rule layer
+
+## Document roles
+
+These explanation files are close to the right limit already, but they were too
+overlapping. The intended split is:
+
+- [README.md](README.md): shortest human-facing overview and run instructions
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): current technical source of truth
+- [wiki.repo](wiki.repo): 3-minute AI handoff note
+- [AGENTS.md](AGENTS.md): working rules for coding agents
+- [docs/adr/](docs/adr/): why key architectural decisions were made
+- [docs/PERSISTENCE-DESIGN.md](docs/PERSISTENCE-DESIGN.md): future-state persistence plan
+- [MVP-PRD.md](MVP-PRD.md): original product scope and rationale
+- [TECHNICAL-SPEC.md](TECHNICAL-SPEC.md): original target architecture and build plan
+
+If those boundaries are kept, the file count is acceptable. If they drift back
+into restating each other, there are too many.
